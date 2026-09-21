@@ -17,7 +17,8 @@ virtual wallet. No real money is involved anywhere in the system.
 | Candlestick & Line Chart | Interactive hand-drawn SVG OHLC candlestick chart (green for close >= open, red for close < open) with Candle/Line toggle |
 | Changing stock prices from test data | 30-minute candles per stock; "Play session" steps the clock forward and the whole screen re-prices |
 | Price for a **selected date and time** | Date and time pickers plus a scrubber over all 156 timestamps; every price in the UI resolves to the last candle at or before that moment |
-| Buy and sell with virtual money | Order ticket with quantity presets, funds and holdings validation |
+| Buy and sell with virtual money | Order ticket with quantity presets, estimated fee (0.05%), funds and holdings validation |
+| Brokerage Fee Simulation | Flat 0.05% brokerage fee on every order (BUY/SELL), deducted from cash, stored in transactions, and factored into P&L and cost basis |
 | Build and manage a portfolio | Holdings table — quantity, average cost, current price, invested, market value |
 | Track profit and loss | Unrealised P&L per position, booked P&L on every sell, overall return, and a portfolio equity curve |
 | Transaction history | Every fill recorded with the market timestamp it executed at |

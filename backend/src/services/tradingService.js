@@ -40,6 +40,7 @@ function executeTrade({ symbol, side, quantity, at }) {
 
   const price = quote.price;
   const amount = round2(price * qty);
+  const fee = round2(amount * 0.0005);
   const user = getUser();
   const holding = db.prepare('SELECT * FROM holdings WHERE user_id = ? AND symbol = ?')
     .get(user.id, sym);
@@ -48,22 +49,24 @@ function executeTrade({ symbol, side, quantity, at }) {
 
   const run = db.transaction(() => {
     if (dir === 'BUY') {
-      if (amount > user.cash + 0.001) {
+      const totalCost = round2(amount + fee);
+      if (totalCost > user.cash + 0.001) {
         throw new TradeError(
-          `Not enough funds. This order costs ${fmt(amount)} and you have ${fmt(user.cash)}.`,
+          `Not enough funds. This order costs ${fmt(totalCost)} (${fmt(amount)} + ${fmt(fee)} fee) and you have ${fmt(user.cash)}.`,
           'INSUFFICIENT_FUNDS'
         );
       }
       if (holding) {
         const newQty = holding.quantity + qty;
-        const newAvg = (holding.quantity * holding.avg_price + qty * price) / newQty;
+        const newAvg = (holding.quantity * holding.avg_price + amount + fee) / newQty;
         db.prepare('UPDATE holdings SET quantity = ?, avg_price = ? WHERE id = ?')
           .run(newQty, newAvg, holding.id);
       } else {
+        const newAvg = (amount + fee) / qty;
         db.prepare('INSERT INTO holdings (user_id, symbol, quantity, avg_price) VALUES (?,?,?,?)')
-          .run(user.id, sym, qty, price);
+          .run(user.id, sym, qty, newAvg);
       }
-      db.prepare('UPDATE users SET cash = cash - ? WHERE id = ?').run(amount, user.id);
+      db.prepare('UPDATE users SET cash = cash - ? WHERE id = ?').run(totalCost, user.id);
     } else {
       if (!holding || holding.quantity < qty) {
         throw new TradeError(
@@ -71,18 +74,19 @@ function executeTrade({ symbol, side, quantity, at }) {
           'INSUFFICIENT_HOLDINGS'
         );
       }
-      realised = round2((price - holding.avg_price) * qty);
+      realised = round2((price - holding.avg_price) * qty - fee);
       const left = holding.quantity - qty;
       if (left === 0) db.prepare('DELETE FROM holdings WHERE id = ?').run(holding.id);
       else db.prepare('UPDATE holdings SET quantity = ? WHERE id = ?').run(left, holding.id);
-      db.prepare('UPDATE users SET cash = cash + ? WHERE id = ?').run(amount, user.id);
+      const netProceeds = round2(amount - fee);
+      db.prepare('UPDATE users SET cash = cash + ? WHERE id = ?').run(netProceeds, user.id);
     }
 
     const info = db.prepare(`
       INSERT INTO transactions
-        (user_id, symbol, side, quantity, price, amount, realised_pnl, market_ts, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?)
-    `).run(user.id, sym, dir, qty, price, amount, realised, quote.asOf, new Date().toISOString());
+        (user_id, symbol, side, quantity, price, amount, fee, realised_pnl, market_ts, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+    `).run(user.id, sym, dir, qty, price, amount, fee, realised, quote.asOf, new Date().toISOString());
 
     return info.lastInsertRowid;
   });
@@ -96,6 +100,7 @@ function executeTrade({ symbol, side, quantity, at }) {
     quantity: qty,
     price,
     amount,
+    fee,
     realisedPnl: realised,
     marketTime: quote.asOf,
     cashAfter: round2(getUser().cash),
@@ -168,7 +173,7 @@ function getPortfolio(at) {
 
 function getTransactions({ limit = 200, symbol } = {}) {
   const params = [DEMO_USER.id];
-  let sql = `SELECT id, symbol, side, quantity, price, amount, realised_pnl AS realisedPnl,
+  let sql = `SELECT id, symbol, side, quantity, price, amount, fee, realised_pnl AS realisedPnl,
                     market_ts AS marketTime, created_at AS createdAt
                FROM transactions WHERE user_id = ?`;
   if (symbol) { sql += ' AND symbol = ?'; params.push(String(symbol).toUpperCase()); }
@@ -186,7 +191,7 @@ function getEquityCurve(at) {
   const stamps = db.prepare('SELECT DISTINCT ts FROM prices WHERE ts <= ? ORDER BY ts').all(ts)
     .map((r) => r.ts);
   const txns = db.prepare(
-    'SELECT symbol, side, quantity, amount, market_ts FROM transactions WHERE user_id = ? ORDER BY id'
+    'SELECT symbol, side, quantity, amount, COALESCE(fee, 0) AS fee, market_ts FROM transactions WHERE user_id = ? ORDER BY id'
   ).all(DEMO_USER.id);
 
   const closes = {};
@@ -205,7 +210,7 @@ function getEquityCurve(at) {
       const t = txns[cursor++];
       const sign = t.side === 'BUY' ? 1 : -1;
       held[t.symbol] = (held[t.symbol] || 0) + sign * t.quantity;
-      cash -= sign * t.amount;
+      cash -= (sign * t.amount + (t.fee || 0));
     }
     let value = 0;
     for (const [sym, qty] of Object.entries(held)) {

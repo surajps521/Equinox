@@ -321,6 +321,7 @@ footer{margin-top:26px; padding-top:14px; border-top:1px solid var(--line); colo
             </div>
           </div>
           <div class="value-line row"><span class="k">Order value</span><span class="v" id="orderVal">₹0.00</span></div>
+          <div class="row" style="font-size:12px; padding:0 2px"><span class="k">Est. fee (0.05%)</span><span class="v" id="feeVal">₹0.00</span></div>
           <div class="actions">
             <button class="buy" id="buyBtn" type="button">Buy</button>
             <button class="sell" id="sellBtn" type="button">Sell</button>
@@ -452,7 +453,8 @@ const LocalApi = (() => {
       for(let i = 0; i <= end; i++){
         while(c < txns.length && txns[c].marketTime <= M.stamps[i]){
           const t = txns[c++], sign = t.side === 'BUY' ? 1 : -1;
-          held[t.symbol] = (held[t.symbol]||0) + sign*t.quantity; cash -= sign*t.amount;
+          held[t.symbol] = (held[t.symbol]||0) + sign*t.quantity;
+          cash -= (sign * t.amount + (t.fee || 0));
         }
         let v = 0; for(const [s,q] of Object.entries(held)) v += q * M.series[s].c[i];
         out.push({ts:M.stamps[i], equity:r2(cash+v)});
@@ -463,20 +465,22 @@ const LocalApi = (() => {
       const i = idxOf(at), q = quote(symbol, i), qty = Number(quantity);
       if(!Number.isInteger(qty) || qty <= 0) throw new Error('Quantity must be a whole number above zero.');
       const amount = r2(q.price * qty);
+      const fee = r2(amount * 0.0005);
       let realised = 0;
       const h = book.holdings[symbol];
       if(side === 'BUY'){
-        if(amount > book.cash + 0.001) throw new Error(`Not enough funds. This order costs ${INR(amount)} and you have ${INR(book.cash)}.`);
-        if(h){ const nq = h.qty + qty; h.avg = (h.qty*h.avg + qty*q.price)/nq; h.qty = nq; }
-        else book.holdings[symbol] = {qty, avg:q.price};
-        book.cash -= amount;
+        const totalCost = r2(amount + fee);
+        if(totalCost > book.cash + 0.001) throw new Error(`Not enough funds. This order costs ${INR(totalCost)} (${INR(amount)} + ${INR(fee)} fee) and you have ${INR(book.cash)}.`);
+        if(h){ const nq = h.qty + qty; h.avg = (h.qty*h.avg + amount + fee)/nq; h.qty = nq; }
+        else book.holdings[symbol] = {qty, avg:(amount + fee)/qty};
+        book.cash -= totalCost;
       } else {
         if(!h || h.qty < qty) throw new Error(`You hold ${h ? h.qty : 0} share(s) of ${symbol}, so you cannot sell ${qty}.`);
-        realised = r2((q.price - h.avg) * qty);
+        realised = r2((q.price - h.avg) * qty - fee);
         h.qty -= qty; if(h.qty === 0) delete book.holdings[symbol];
-        book.cash += amount;
+        book.cash += (amount - fee);
       }
-      const t = {id:book.nextId++, symbol, side, quantity:qty, price:q.price, amount, realisedPnl:realised,
+      const t = {id:book.nextId++, symbol, side, quantity:qty, price:q.price, amount, fee, realisedPnl:realised,
                  marketTime:q.asOf, createdAt:new Date().toISOString()};
       book.txns.push(t); save();
       return Object.assign({}, t, {cashAfter:r2(book.cash)});
@@ -598,7 +602,9 @@ function renderTicket(){
   $('cashVal').textContent = INR(S.portfolio.cash);
   $('holdVal').textContent = h ? `${h.quantity} shares @ ${h.avgPrice.toFixed(2)} avg` : '0 shares';
   const qty = Number($('qty').value) || 0;
-  $('orderVal').textContent = INR(qty * (q ? q.price : 0));
+  const val = qty * (q ? q.price : 0);
+  $('orderVal').textContent = INR(val);
+  if($('feeVal')) $('feeVal').textContent = INR(val * 0.0005);
   $('sellBtn').disabled = !h || h.quantity < 1;
 }
 
@@ -797,7 +803,7 @@ async function renderPanel(){
   }
   el.innerHTML = `<div class="card"><h2>Transaction history <span class="sub">${txns.length} orders</span></h2>
     <div style="overflow-x:auto"><table>
-    <thead><tr><th>Market time</th><th>Stock</th><th>Type</th><th>Qty</th><th>Price</th><th>Value</th><th>Booked P&amp;L</th></tr></thead>
+    <thead><tr><th>Market time</th><th>Stock</th><th>Type</th><th>Qty</th><th>Price</th><th>Value</th><th>Fee</th><th>Booked P&amp;L</th></tr></thead>
     <tbody>${txns.map(t => `
       <tr><td class="num" style="font-size:12.5px">${t.marketTime.slice(0,16).replace('T',' ')}</td>
         <td><span class="sym">${t.symbol}</span></td>
@@ -805,6 +811,7 @@ async function renderPanel(){
         <td class="num">${t.quantity}</td>
         <td class="num">${t.price.toFixed(2)}</td>
         <td class="num">${INR(t.amount)}</td>
+        <td class="num">${INR(t.fee || 0)}</td>
         <td class="num ${t.realisedPnl>0?'up':(t.realisedPnl<0?'down':'')}">${t.side==='SELL'?signed(t.realisedPnl):'—'}</td>
       </tr>`).join('')}</tbody></table></div></div>`;
 }
@@ -927,7 +934,7 @@ async function submit(side){
   try {
     const t = await S.api.trade({symbol:S.selected, side, quantity:qty, at:at()});
     toast(`${side === 'BUY' ? 'Bought' : 'Sold'} ${t.quantity} ${t.symbol}`,
-      `at ${INR(t.price)} · order value ${INR(t.amount)}` + (side === 'SELL' ? ` · booked ${signed(t.realisedPnl)}` : ''));
+      `at ${INR(t.price)} · order value ${INR(t.amount)} · fee ${INR(t.fee || 0)}` + (side === 'SELL' ? ` · booked ${signed(t.realisedPnl)}` : ''));
     await refresh();
   } catch(err){
     toast('Order rejected', err.message, true);

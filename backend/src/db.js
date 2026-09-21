@@ -68,6 +68,7 @@ function createSchema() {
       quantity      INTEGER NOT NULL,
       price         REAL NOT NULL,          -- price taken from the CSV candle
       amount        REAL NOT NULL,          -- quantity * price
+      fee           REAL NOT NULL DEFAULT 0,-- 0.05% brokerage fee
       realised_pnl  REAL NOT NULL DEFAULT 0,
       market_ts     TEXT NOT NULL,          -- simulated market time of the trade
       created_at    TEXT NOT NULL           -- real wall-clock time
