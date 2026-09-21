@@ -13,6 +13,8 @@ virtual wallet. No real money is involved anywhere in the system.
 | Requirement | Where it lives |
 |---|---|
 | View available stocks | Market watch panel — 10 stocks with live price and day change |
+| Top Gainers & Losers Widget | Dedicated Market Movers panel displaying the top 3 gainers and top 3 losers by day-change % dynamically at the selected market timestamp |
+| Candlestick & Line Chart | Interactive hand-drawn SVG OHLC candlestick chart (green for close >= open, red for close < open) with Candle/Line toggle |
 | Changing stock prices from test data | 30-minute candles per stock; "Play session" steps the clock forward and the whole screen re-prices |
 | Price for a **selected date and time** | Date and time pickers plus a scrubber over all 156 timestamps; every price in the UI resolves to the last candle at or before that moment |
 | Buy and sell with virtual money | Order ticket with quantity presets, funds and holdings validation |

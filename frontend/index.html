@@ -127,6 +127,14 @@ tr.sel{background:var(--panel-2); box-shadow:inset 3px 0 0 var(--accent)}
 .chip{display:inline-block; padding:2px 7px; border-radius:5px; font-size:12px; font-weight:500}
 .chip.u{background:var(--up-bg); color:var(--up)} .chip.d{background:var(--down-bg); color:var(--down)}
 
+/* top gainers / losers widget */
+.movers-grid{display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line-soft); border-top:1px solid var(--line-soft)}
+.movers-col{background:var(--panel); padding:10px 12px}
+.movers-head{font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.03em; margin-bottom:6px}
+.mover-item{display:flex; align-items:center; justify-content:space-between; padding:5px 0; cursor:pointer}
+.mover-item:hover{opacity:.8}
+.mover-sym{font-weight:600; font-size:13px}
+
 /* chart */
 .chart-head{display:flex; align-items:flex-start; gap:16px; padding:14px; flex-wrap:wrap}
 .chart-head .name{font-size:18px; font-weight:600; letter-spacing:-.02em}
@@ -242,14 +250,31 @@ footer{margin-top:26px; padding-top:14px; border-top:1px solid var(--line); colo
   <div class="tape" aria-hidden="true"><div class="tape-track" id="tape"></div></div>
 
   <div class="grid">
-    <!-- watchlist -->
-    <section class="card">
-      <h2>Market watch <span class="sub" id="watchCount"></span></h2>
-      <table>
-        <thead><tr><th>Stock</th><th>Price</th><th>Change</th></tr></thead>
-        <tbody id="watchBody"></tbody>
-      </table>
-    </section>
+    <div style="display:grid; gap:14px">
+      <!-- top gainers & losers widget -->
+      <section class="card" id="moversCard">
+        <h2>Market movers <span class="sub">Top gainers &amp; losers</span></h2>
+        <div class="movers-grid">
+          <div class="movers-col">
+            <div class="movers-head up">▲ Top Gainers</div>
+            <div id="gainersList"></div>
+          </div>
+          <div class="movers-col">
+            <div class="movers-head down">▼ Top Losers</div>
+            <div id="losersList"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- watchlist -->
+      <section class="card">
+        <h2>Market watch <span class="sub" id="watchCount"></span></h2>
+        <table>
+          <thead><tr><th>Stock</th><th>Price</th><th>Change</th></tr></thead>
+          <tbody id="watchBody"></tbody>
+        </table>
+      </section>
+    </div>
 
     <div style="display:grid; gap:14px">
       <!-- chart -->
@@ -263,7 +288,11 @@ footer{margin-top:26px; padding-top:14px; border-top:1px solid var(--line); colo
             <div class="p" id="selPrice">—</div>
             <div id="selChange" class="num" style="font-size:13px"></div>
           </div>
-          <div style="width:100%; display:flex; align-items:center; gap:10px">
+          <div style="width:100%; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+            <div class="range-tabs" id="typeTabs">
+              <button type="button" data-type="candle" aria-pressed="true">Candles</button>
+              <button type="button" data-type="line" aria-pressed="false">Line</button>
+            </div>
             <div class="range-tabs" id="rangeTabs">
               <button type="button" data-range="day" aria-pressed="true">This session</button>
               <button type="button" data-range="all" aria-pressed="false">All 12 days</button>
@@ -458,7 +487,7 @@ const LocalApi = (() => {
 })();
 
 /* --------------------------------------------------------------- state */
-const S = {api:null, stamps:[], index:0, selected:'TCS', range:'day', tab:'holdings',
+const S = {api:null, stamps:[], index:0, selected:'TCS', range:'day', chartType:'candle', tab:'holdings',
            quotes:[], portfolio:null, playing:false, timer:null};
 const $ = (id) => document.getElementById(id);
 const at = () => S.stamps[S.index];
@@ -511,10 +540,32 @@ async function refresh(){
 
   renderEquity();
   renderTape();
+  renderMovers();
   renderWatchlist();
   renderTicket();
   await renderChart();
   await renderPanel();
+}
+
+function renderMovers(){
+  if(!S.quotes || S.quotes.length === 0) return;
+  const sorted = [...S.quotes].sort((a, b) => b.changePercent - a.changePercent);
+  const gainers = sorted.slice(0, 3);
+  const losers = sorted.slice(-3).reverse();
+
+  $('gainersList').innerHTML = gainers.map(q => `
+    <div class="mover-item" data-sym="${q.symbol}">
+      <span class="mover-sym">${q.symbol}</span>
+      <span class="chip u num">${pct(q.changePercent)}</span>
+    </div>
+  `).join('');
+
+  $('losersList').innerHTML = losers.map(q => `
+    <div class="mover-item" data-sym="${q.symbol}">
+      <span class="mover-sym">${q.symbol}</span>
+      <span class="chip d num">${pct(q.changePercent)}</span>
+    </div>
+  `).join('');
 }
 
 function renderEquity(){
@@ -565,7 +616,86 @@ async function renderChart(){
 
   const {candles} = await S.api.history(S.selected, at(), S.range);
   $('candleNote').textContent = `${candles.length} candles`;
-  drawLine($('chart'), candles, q.previousClose, q.change >= 0);
+  if(S.chartType === 'line'){
+    drawLine($('chart'), candles, q.previousClose, q.change >= 0);
+  } else {
+    drawCandles($('chart'), candles, q.previousClose);
+  }
+}
+
+function drawCandles(svg, candles, baseline){
+  const W = 760, H = 240, padL = 12, padR = 56, padT = 14, padB = 22;
+  if(!candles || candles.length === 0){
+    svg.innerHTML = `<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="var(--muted)" font-size="13">Not enough candles yet at this time</text>`;
+    return;
+  }
+
+  const allLows = candles.map(c => c.low);
+  const allHighs = candles.map(c => c.high);
+  if(baseline != null){ allLows.push(baseline); allHighs.push(baseline); }
+
+  let lo = Math.min(...allLows);
+  let hi = Math.max(...allHighs);
+  if(hi === lo){ hi += 1; lo -= 1; }
+  const pad = (hi - lo) * 0.12 || hi * 0.01;
+  lo -= pad; hi += pad;
+
+  const plotW = W - padL - padR;
+  const n = candles.length;
+  const step = plotW / n;
+  const candleW = Math.max(1.5, Math.min(16, step * 0.68));
+
+  const cx = i => padL + (i + 0.5) * step;
+  const y = v => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+
+  // horizontal gridlines with price labels on the right
+  let grid = '';
+  for(let g = 0; g <= 3; g++){
+    const v = lo + (hi - lo) * (g / 3), yy = y(v);
+    grid += `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W-padR}" y2="${yy.toFixed(1)}" stroke="var(--line-soft)" stroke-width="1"/>
+             <text x="${W-padR+7}" y="${(yy+4).toFixed(1)}" font-size="11" fill="var(--muted)" font-family="IBM Plex Mono, monospace">${v.toFixed(0)}</text>`;
+  }
+  // previous-close reference
+  if(baseline != null){
+    const by = y(baseline);
+    grid += `<line x1="${padL}" y1="${by.toFixed(1)}" x2="${W-padR}" y2="${by.toFixed(1)}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 4" opacity=".65"/>`;
+  }
+
+  // date/time ticks along the bottom
+  let ticks = '';
+  const every = Math.max(1, Math.round(n / 6));
+  candles.forEach((c, i) => {
+    if(i % every && i !== n - 1) return;
+    const label = S.range === 'day' ? c.time : c.date.slice(5).replace('-', '/');
+    ticks += `<text x="${cx(i).toFixed(1)}" y="${H-5}" font-size="10.5" fill="var(--muted)" text-anchor="${i===0?'start':(i===n-1?'end':'middle')}" font-family="IBM Plex Mono, monospace">${label}</text>`;
+  });
+
+  // candle SVG elements
+  let candleElements = '';
+  candles.forEach((c, i) => {
+    const xCenter = cx(i);
+    const yOpen = y(c.open);
+    const yClose = y(c.close);
+    const yHigh = y(c.high);
+    const yLow = y(c.low);
+    const isUp = c.close >= c.open;
+    const col = isUp ? 'var(--up)' : 'var(--down)';
+
+    const bodyY = Math.min(yOpen, yClose);
+    const bodyH = Math.max(1.5, Math.abs(yOpen - yClose));
+    const bodyX = xCenter - candleW / 2;
+
+    const titleText = `${c.date} ${c.time} | O:${c.open.toFixed(2)} H:${c.high.toFixed(2)} L:${c.low.toFixed(2)} C:${c.close.toFixed(2)}`;
+
+    candleElements += `
+      <g class="candle-g">
+        <title>${titleText}</title>
+        <line x1="${xCenter.toFixed(1)}" y1="${yHigh.toFixed(1)}" x2="${xCenter.toFixed(1)}" y2="${yLow.toFixed(1)}" stroke="${col}" stroke-width="${candleW > 4 ? 1.5 : 1}"/>
+        <rect x="${bodyX.toFixed(1)}" y="${bodyY.toFixed(1)}" width="${candleW.toFixed(1)}" height="${bodyH.toFixed(1)}" fill="${col}" rx="${candleW > 5 ? 1 : 0}"/>
+      </g>`;
+  });
+
+  svg.innerHTML = grid + candleElements + ticks;
 }
 
 function drawLine(svg, candles, baseline, rising){
@@ -723,11 +853,25 @@ function wireEvents(){
     const tr = e.target.closest('tr'); if(!tr) return;
     S.selected = tr.dataset.sym; renderWatchlist(); renderTicket(); renderChart();
   });
+  $('moversCard').addEventListener('click', e => {
+    const item = e.target.closest('.mover-item[data-sym]'); if(!item) return;
+    S.selected = item.dataset.sym; renderWatchlist(); renderTicket(); renderChart();
+  });
   $('panel').addEventListener('click', e => {
     const tr = e.target.closest('tr[data-sym]'); if(!tr) return;
     S.selected = tr.dataset.sym; renderWatchlist(); renderTicket(); renderChart();
     window.scrollTo({top:0, behavior:'smooth'});
   });
+
+  const typeTabs = $('typeTabs');
+  if(typeTabs){
+    typeTabs.addEventListener('click', e => {
+      const b = e.target.closest('button'); if(!b) return;
+      S.chartType = b.dataset.type;
+      [...typeTabs.children].forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      renderChart();
+    });
+  }
 
   $('rangeTabs').addEventListener('click', e => {
     const b = e.target.closest('button'); if(!b) return;
